@@ -21,6 +21,7 @@ class SpeechRecognitionManager: ObservableObject {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var audioEngine = AVAudioEngine()
+    private var originalText = "" // Store original text before speech recognition starts
     
     init() {
         // Initialize speech recognizer for current locale
@@ -50,7 +51,7 @@ class SpeechRecognitionManager: ObservableObject {
         }
     }
     
-    func startRecording() {
+    func startRecording(withCurrentText currentText: String = "") {
         guard isAuthorized else {
             recognitionError = "Speech recognition not authorized"
             return
@@ -60,6 +61,9 @@ class SpeechRecognitionManager: ObservableObject {
             recognitionError = "Speech recognizer not available"
             return
         }
+        
+        // Store the original text
+        originalText = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
         
         // Cancel any previous task
         recognitionTask?.cancel()
@@ -145,6 +149,15 @@ class SpeechRecognitionManager: ObservableObject {
     func clearTranscription() {
         transcriptionText = ""
         recognitionError = nil
+        originalText = ""
+    }
+    
+    func getFullText() -> String {
+        if originalText.isEmpty {
+            return transcriptionText
+        } else {
+            return originalText + " " + transcriptionText
+        }
     }
 }
 

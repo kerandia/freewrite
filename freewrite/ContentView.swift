@@ -173,7 +173,7 @@ struct ContentView: View {
         } else {
             if speechManager.isAuthorized {
                 speechManager.clearTranscription()
-                speechManager.startRecording()
+                speechManager.startRecording(withCurrentText: text)
             } else {
                 speechManager.requestAuthorization()
                 showingSpeechPermissionAlert = true
@@ -183,17 +183,11 @@ struct ContentView: View {
     
     private func handleSpeechTranscription() {
         if !speechManager.transcriptionText.isEmpty {
-            // Ensure text always starts with two newlines
-            let cleanTranscription = speechManager.transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Get the full text (original + transcription) from speech manager
+            let fullText = speechManager.getFullText()
             
-            // If text is empty or just the header, replace with transcription
-            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                text = "\n\n" + cleanTranscription
-            } else {
-                // Append to existing text with a space
-                let currentText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                text = "\n\n" + currentText + " " + cleanTranscription
-            }
+            // Ensure text always starts with two newlines
+            text = "\n\n" + fullText
         }
     }
     
@@ -626,13 +620,15 @@ struct ContentView: View {
                                 Image(systemName: speechManager.isRecording ? "mic.fill" : "mic")
                                     .foregroundColor(
                                         speechManager.isRecording ? .red : 
-                                        (isHoveringMicrophone ? textHoverColor : textColor)
+                                        (!speechManager.isAuthorized ? .gray.opacity(0.5) :
+                                        (isHoveringMicrophone ? textHoverColor : textColor))
                                     )
                                     .font(.system(size: 14))
                                     .scaleEffect(speechManager.isRecording ? 1.2 : 1.0)
                                     .animation(.easeInOut(duration: 0.2), value: speechManager.isRecording)
                             }
                             .buttonStyle(.plain)
+                            .disabled(!speechManager.isAuthorized && speechManager.authorizationStatus != .notDetermined)
                             .onHover { hovering in
                                 isHoveringMicrophone = hovering
                                 isHoveringBottomNav = hovering
@@ -642,7 +638,8 @@ struct ContentView: View {
                                     NSCursor.pop()
                                 }
                             }
-                            .help(speechManager.isRecording ? "Stop dictation" : "Start dictation")
+                            .help(speechManager.isRecording ? "Stop dictation (⌘⇧S)" : 
+                                  speechManager.isAuthorized ? "Start dictation (⌘⇧S)" : "Grant microphone permission to use dictation")
                             .alert("Microphone Permission", isPresented: $showingSpeechPermissionAlert) {
                                 Button("OK") {
                                     showingSpeechPermissionAlert = false
@@ -1158,6 +1155,16 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
             isFullscreen = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didFinishLaunchingNotification)) { _ in
+            // Add global keyboard shortcut for speech recognition (Cmd+Shift+S)
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.modifierFlags.contains([.command, .shift]) && event.charactersIgnoringModifiers == "s" {
+                    toggleSpeechRecognition()
+                    return nil // Consume the event
+                }
+                return event
+            }
         }
     }
     
