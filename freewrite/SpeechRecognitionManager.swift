@@ -10,7 +10,7 @@ import Speech
 import AVFoundation
 
 @MainActor
-class SpeechRecognitionManager: ObservableObject {
+class SpeechRecognitionManager: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published var transcriptionText = ""
     @Published var isAuthorized = false
@@ -30,6 +30,42 @@ class SpeechRecognitionManager: ObservableObject {
     }
     
     func requestAuthorization() {
+        // First request microphone permission on macOS
+        #if os(macOS)
+        requestMicrophonePermission { [weak self] granted in
+            DispatchQueue.main.async {
+                if granted {
+                    self?.requestSpeechRecognitionAuthorization()
+                } else {
+                    self?.authorizationStatus = .denied
+                    self?.isAuthorized = false
+                    self?.recognitionError = "Microphone access denied"
+                }
+            }
+        }
+        #else
+        requestSpeechRecognitionAuthorization()
+        #endif
+    }
+    
+    #if os(macOS)
+    private func requestMicrophonePermission(completion: @escaping (Bool) -> Void) {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            completion(true)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                completion(granted)
+            }
+        case .denied, .restricted:
+            completion(false)
+        @unknown default:
+            completion(false)
+        }
+    }
+    #endif
+    
+    private func requestSpeechRecognitionAuthorization() {
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
                 self?.authorizationStatus = status
@@ -57,6 +93,14 @@ class SpeechRecognitionManager: ObservableObject {
             return
         }
         
+        #if os(macOS)
+        // Check microphone permission on macOS
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            recognitionError = "Microphone access not authorized"
+            return
+        }
+        #endif
+        
         guard let speechRecognizer = speechRecognizer, speechRecognizer.isAvailable else {
             recognitionError = "Speech recognizer not available"
             return
@@ -69,7 +113,8 @@ class SpeechRecognitionManager: ObservableObject {
         recognitionTask?.cancel()
         recognitionTask = nil
         
-        // Configure audio session
+        // Configure audio session (iOS only)
+        #if os(iOS)
         let audioSession = AVAudioSession.sharedInstance()
         do {
             try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
@@ -78,6 +123,7 @@ class SpeechRecognitionManager: ObservableObject {
             recognitionError = "Audio session setup failed: \(error.localizedDescription)"
             return
         }
+        #endif
         
         // Create recognition request
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
@@ -138,12 +184,14 @@ class SpeechRecognitionManager: ObservableObject {
         
         isRecording = false
         
-        // Deactivate audio session
+        // Deactivate audio session (iOS only)
+        #if os(iOS)
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
             print("Failed to deactivate audio session: \(error.localizedDescription)")
         }
+        #endif
     }
     
     func clearTranscription() {
