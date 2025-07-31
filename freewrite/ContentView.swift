@@ -10,6 +10,8 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import PDFKit
+import Speech
+import AVFoundation
 
 struct HumanEntry: Identifiable {
     let id: UUID
@@ -85,6 +87,12 @@ struct ContentView: View {
     @State private var colorScheme: ColorScheme = .light // Add state for color scheme
     @State private var isHoveringThemeToggle = false // Add state for theme toggle hover
     @State private var didCopyPrompt: Bool = false // Add state for copy prompt feedback
+    
+    // Speech recognition states
+    @StateObject private var speechManager = SpeechRecognitionManager()
+    @State private var isHoveringMicrophone = false
+    @State private var showingSpeechPermissionAlert = false
+    
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     let entryHeight: CGFloat = 40
     
@@ -155,6 +163,32 @@ struct ContentView: View {
         // Load saved color scheme preference
         let savedScheme = UserDefaults.standard.string(forKey: "colorScheme") ?? "light"
         _colorScheme = State(initialValue: savedScheme == "dark" ? .dark : .light)
+    }
+    
+    // MARK: - Speech Recognition Functions
+    
+    private func toggleSpeechRecognition() {
+        if speechManager.isRecording {
+            speechManager.stopRecording()
+        } else {
+            if speechManager.isAuthorized {
+                speechManager.clearTranscription()
+                speechManager.startRecording(withCurrentText: text)
+            } else {
+                speechManager.requestAuthorization()
+                showingSpeechPermissionAlert = true
+            }
+        }
+    }
+    
+    private func handleSpeechTranscription() {
+        if !speechManager.transcriptionText.isEmpty {
+            // Get the full text (original + transcription) from speech manager
+            let fullText = speechManager.getFullText()
+            
+            // Ensure text always starts with two newlines
+            text = "\n\n" + fullText
+        }
     }
     
     // Modify getDocumentsDirectory to use cached value
@@ -428,13 +462,16 @@ struct ContentView: View {
                     .overlay(
                         ZStack(alignment: .topLeading) {
                             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                Text(placeholderText)
+                                Text(speechManager.isRecording ? "\n\nListening... Speak now!" : placeholderText)
                                     .font(.custom(selectedFont, size: fontSize))
-                                    .foregroundColor(colorScheme == .light ? .gray.opacity(0.5) : .gray.opacity(0.6))
-                                // .padding(.top, 8)
-                                // .padding(.leading, 8)
+                                    .foregroundColor(
+                                        speechManager.isRecording ? 
+                                        (colorScheme == .light ? .red.opacity(0.7) : .red.opacity(0.8)) :
+                                        (colorScheme == .light ? .gray.opacity(0.5) : .gray.opacity(0.6))
+                                    )
                                     .allowsHitTesting(false)
                                     .offset(x: 5, y: placeholderOffset)
+                                    .animation(.easeInOut(duration: 0.3), value: speechManager.isRecording)
                             }
                         }, alignment: .topLeading
                     )
@@ -576,6 +613,48 @@ struct ContentView: View {
                         
                         // Utility buttons (moved to right)
                         HStack(spacing: 8) {
+                            // Microphone button for speech-to-text
+                            Button(action: {
+                                toggleSpeechRecognition()
+                            }) {
+                                Image(systemName: speechManager.isRecording ? "mic.fill" : "mic")
+                                    .foregroundColor(
+                                        speechManager.isRecording ? .red : 
+                                        (!speechManager.isAuthorized ? .gray.opacity(0.5) :
+                                        (isHoveringMicrophone ? textHoverColor : textColor))
+                                    )
+                                    .font(.system(size: 14))
+                                    .scaleEffect(speechManager.isRecording ? 1.2 : 1.0)
+                                    .animation(.easeInOut(duration: 0.2), value: speechManager.isRecording)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!speechManager.isAuthorized && speechManager.authorizationStatus != .notDetermined)
+                            .onHover { hovering in
+                                isHoveringMicrophone = hovering
+                                isHoveringBottomNav = hovering
+                                if hovering {
+                                    NSCursor.pointingHand.push()
+                                } else {
+                                    NSCursor.pop()
+                                }
+                            }
+                            .help(speechManager.isRecording ? "Stop dictation (⌘⇧S)" : 
+                                  speechManager.isAuthorized ? "Start dictation (⌘⇧S)" : "Grant microphone permission to use dictation")
+                            .alert("Microphone Permission", isPresented: $showingSpeechPermissionAlert) {
+                                Button("OK") {
+                                    showingSpeechPermissionAlert = false
+                                }
+                            } message: {
+                                if let error = speechManager.recognitionError {
+                                    Text(error)
+                                } else {
+                                    Text("Microphone access is required for speech-to-text functionality. Please grant permission in System Preferences.")
+                                }
+                            }
+                            
+                            Text("•")
+                                .foregroundColor(.gray)
+                            
                             Button(timerButtonTitle) {
                                 let now = Date()
                                 if let lastClick = lastClickTime,
@@ -1039,12 +1118,24 @@ struct ContentView: View {
         .onAppear {
             showingSidebar = false  // Hide sidebar by default
             loadExistingEntries()
+            // Request speech recognition authorization on app startup
+            speechManager.requestAuthorization()
         }
         .onChange(of: text) { _ in
             // Save current entry when text changes
             if let currentId = selectedEntryId,
                let currentEntry = entries.first(where: { $0.id == currentId }) {
                 saveEntry(entry: currentEntry)
+            }
+        }
+        .onChange(of: speechManager.transcriptionText) { _ in
+            // Handle speech transcription updates
+            handleSpeechTranscription()
+        }
+        .onChange(of: speechManager.recognitionError) { error in
+            // Show error alert if speech recognition fails
+            if error != nil {
+                showingSpeechPermissionAlert = true
             }
         }
         .onReceive(timer) { _ in
@@ -1064,6 +1155,16 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
             isFullscreen = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didFinishLaunchingNotification)) { _ in
+            // Add global keyboard shortcut for speech recognition (Cmd+Shift+S)
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.modifierFlags.contains([.command, .shift]) && event.charactersIgnoringModifiers == "s" {
+                    toggleSpeechRecognition()
+                    return nil // Consume the event
+                }
+                return event
+            }
         }
     }
     
